@@ -1,0 +1,4 @@
+event_type,total_events
+PUSHEVENT,25
+CREATEEVENT,4
+DELETEEVENT,1
