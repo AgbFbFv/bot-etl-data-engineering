@@ -1,81 +1,86 @@
 ﻿import os
-import sys
-import logging
-import json
-from datetime import datetime
 import requests
 import pandas as pd
+import logging
+from datetime import datetime
+from sqlalchemy import create_engine
 
+# Configuración de Logs profesional
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 logger = logging.getLogger("DataEngineeringBot")
 
-class Config:
-    API_SOURCE_URL = "https://api.github.com/events"
+class ETLPipeline:
+    def __init__(self, api_url, raw_dir, processed_dir, db_path):
+        self.api_url = api_url
+        self.raw_dir = raw_dir
+        self.processed_dir = processed_dir
+        self.db_engine = create_engine(f"sqlite:///{db_path}")
+        
+        os.makedirs(self.raw_dir, exist_ok=True)
+        os.makedirs(self.processed_dir, exist_ok=True)
 
-class DataIngestorBot:
-    def __init__(self, config):
-        self.config = config
-
-    def fetch_data_from_api(self):
-        logger.info(f"Iniciando extracción desde API: {self.config.API_SOURCE_URL}")
-        response = requests.get(self.config.API_SOURCE_URL, timeout=30)
+    def extract(self):
+        """Etapa 1: Extract - Ingesta de API REST"""
+        logger.info(f"Iniciando extracción desde API: {self.api_url}")
+        response = requests.get(self.api_url, timeout=10)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
 
-    def save_raw(self, data, filename):
-        os.makedirs("./raw_data", exist_ok=True)
-        output_path = f"./raw_data/{filename}"
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        logger.info(f"Datos crudos guardados en: {output_path}")
-        return output_path
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        raw_file_path = os.path.join(self.raw_dir, f"events_{timestamp}.json")
 
-class LocalTransformationBot:
-    def run_pipeline(self, input_json_path):
-        logger.info(f"Procesando archivo con Pandas/Python: {input_json_path}")
-        
-        # Cargar JSON en un DataFrame
-        with open(input_json_path, 'r', encoding='utf-8') as f:
-            raw_data = json.load(f)
-            
-        df = pd.DataFrame(raw_data)
-        
-        # Transformación y Agregación equivalente a Spark SQL
-        df['event_type'] = df['type'].str.upper()
-        df['ingestion_timestamp'] = datetime.now()
-        
-        # Agrupación por tipo de evento
-        summary_df = df.groupby('event_type').size().reset_index(name='total_events')
-        summary_df = summary_df.sort_values(by='total_events', ascending=False)
-        
-        print("\n--- RESULTADO DE LA TRANSFORMACIÓN DE DATOS ---")
-        print(summary_df.head(10).to_string(index=False))
-        print("------------------------------------------------\n")
-        
-        os.makedirs("./processed_data", exist_ok=True)
-        output_csv = "./processed_data/events_summary.csv"
-        summary_df.to_csv(output_csv, index=False)
-        logger.info(f"Resumen guardado exitosamente en: {output_csv}")
-        return output_csv
+        import json
+        with open(raw_file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
 
-class DataPipelineBot:
-    def execute(self):
-        logger.info("=== INICIANDO EJECUCIÓN DEL BOT DE DATOS ===")
-        config = Config()
-        ingestor = DataIngestorBot(config)
+        logger.info(f"Datos crudos guardados en: {raw_file_path}")
+        return raw_file_path, data
+
+    def transform(self, data):
+        """Etapa 2: Transform - Procesamiento y Agregación con Pandas"""
+        logger.info("Iniciando transformación de datos con Pandas...")
+        df = pd.DataFrame(data)
         
-        raw_data = ingestor.fetch_data_from_api()
-        file_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        raw_file = ingestor.save_raw(raw_data, f"events_{file_ts}.json")
+        if 'type' not in df.columns:
+            logger.warning("El campo 'type' no fue encontrado en los datos de entrada.")
+            df['type'] = 'UNKNOWN_EVENT'
 
-        transformer = LocalTransformationBot()
-        transformer.run_pipeline(raw_file)
+        summary_df = df.groupby('type').size().reset_index(name='total_events')
+        summary_df.rename(columns={'type': 'event_type'}, inplace=True)
+        summary_df['created_at'] = datetime.now()
 
-        logger.info("=== FINALIZADA EJECUCIÓN DEL BOT CON ÉXITO ===")
+        logger.info("Transformación finalizada exitosamente.")
+        return summary_df
+
+    def load(self, summary_df):
+        """Etapa 3: Load - Exportación a CSV y Carga en Base de Datos SQL"""
+        csv_path = os.path.join(self.processed_dir, "events_summary.csv")
+        summary_df.to_csv(csv_path, index=False)
+        logger.info(f"Resumen guardado en CSV: {csv_path}")
+
+        summary_df.to_sql(
+            name="metrics_events_summary",
+            con=self.db_engine,
+            if_exists="append",
+            index=False
+        )
+        logger.info("Resumen insertado exitosamente en la tabla SQL 'metrics_events_summary'.")
 
 if __name__ == "__main__":
-    bot = DataPipelineBot()
-    bot.execute()
+    logger.info("=== INICIANDO EJECUCIÓN DEL BOT DE DATOS (ETL PIPELINE) ===")
+    
+    pipeline = ETLPipeline(
+        api_url="https://api.github.com/events",
+        raw_dir="./raw_data",
+        processed_dir="./processed_data",
+        db_path="etl_data.db"
+    )
+
+    _, raw_data = pipeline.extract()
+    processed_df = pipeline.transform(raw_data)
+    pipeline.load(processed_df)
+
+    logger.info("=== FINALIZADA EJECUCIÓN DEL BOT CON ÉXITO ===")
