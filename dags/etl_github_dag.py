@@ -38,6 +38,7 @@ def run_load(**kwargs):
     data_dict = kwargs['ti'].xcom_pull(task_ids='transform_task', key='processed_data')
     processed_df = pd.DataFrame.from_dict(data_dict)
     pipeline.load(processed_df)
+    pipeline.load_to_bigquery()
 
 with DAG(
     'github_events_etl_pipeline',
