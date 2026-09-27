@@ -1,5 +1,6 @@
 requests
 pandas
-pyspark
 sqlalchemy
 pytest
+apache-airflow
+google-cloud-bigquery
