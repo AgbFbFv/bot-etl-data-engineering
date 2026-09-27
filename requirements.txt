@@ -2,3 +2,4 @@ requests
 pandas
 pyspark
 sqlalchemy
+pytest
