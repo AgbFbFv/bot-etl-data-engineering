@@ -1,0 +1,4 @@
+
+*.json
+!raw_data/*.json
+.env
